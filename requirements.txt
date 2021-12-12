@@ -1,0 +1,12 @@
+opencv-python
+numpy
+traitlets
+pafy
+pandas
+
+#onnxruntime==1.8.0
+onnxruntime-gpu==1.8.0
+
+#lap
+#filterpy
+#numba
