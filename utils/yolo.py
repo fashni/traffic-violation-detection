@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import onnxruntime
 import pandas as pd
+from numba import njit, jit
 # import pycuda.autoinit
 # import pycuda.driver as cuda
 # import tensorrt as trt
@@ -16,7 +17,74 @@ from polygraphy.backend.trt import EngineFromBytes, TrtRunner
 from .utils import plot_one_box
 
 
-class YoloInfer(object):
+@njit
+def bbox_iou(box1, box2, x1y1x2y2=True):
+  if not x1y1x2y2:
+    # Transform from center and width to exact coordinates
+    b1_x1, b1_x2 = box1[:, 0] - box1[:, 2] / 2, box1[:, 0] + box1[:, 2] / 2
+    b1_y1, b1_y2 = box1[:, 1] - box1[:, 3] / 2, box1[:, 1] + box1[:, 3] / 2
+    b2_x1, b2_x2 = box2[:, 0] - box2[:, 2] / 2, box2[:, 0] + box2[:, 2] / 2
+    b2_y1, b2_y2 = box2[:, 1] - box2[:, 3] / 2, box2[:, 1] + box2[:, 3] / 2
+  else:
+    # Get the coordinates of bounding boxes
+    b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+    b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+
+  # Get the coordinates of the intersection rectangle
+  inter_rect_x1 = np.maximum(b1_x1, b2_x1)
+  inter_rect_y1 = np.maximum(b1_y1, b2_y1)
+  inter_rect_x2 = np.minimum(b1_x2, b2_x2)
+  inter_rect_y2 = np.minimum(b1_y2, b2_y2)
+  # Intersection area
+  inter_rect_x = inter_rect_x2 - inter_rect_x1 + 1
+  inter_rect_y = inter_rect_y2 - inter_rect_y1 + 1
+  inter_area = np.minimum(inter_rect_x.max(), np.maximum(inter_rect_x, 0)) * \
+               np.minimum(inter_rect_y.max(), np.maximum(inter_rect_y, 0))
+  # inter_area = np.clip(inter_rect_x, 0, None) * \
+  #              np.clip(inter_rect_y, 0, None)
+
+  # Union Area
+  b1_area = (b1_x2 - b1_x1 + 1) * (b1_y2 - b1_y1 + 1)
+  b2_area = (b2_x2 - b2_x1 + 1) * (b2_y2 - b2_y1 + 1)
+
+  iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
+
+  return iou
+
+
+@njit
+def xywh2xyxy(x, origin_h, origin_w, input_h, input_w):
+  """
+  description:    Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+  param:
+    x:          A boxes numpy, each row is a box [center_x, center_y, w, h]
+    origin_h:   height of original image
+    origin_w:   width of original image
+    input_h:    height of processed image
+    input_w:    width of processed image
+  return:
+    y:          A boxes numpy, each row is a box [x1, y1, x2, y2]
+  """
+  y = np.zeros_like(x)
+  r_w = input_w / origin_w
+  r_h = input_h / origin_h
+  if r_h > r_w:
+    y[:, 0] = x[:, 0] - x[:, 2] / 2
+    y[:, 2] = x[:, 0] + x[:, 2] / 2
+    y[:, 1] = x[:, 1] - x[:, 3] / 2 - (input_h - r_w * origin_h) / 2
+    y[:, 3] = x[:, 1] + x[:, 3] / 2 - (input_h - r_w * origin_h) / 2
+    y /= r_w
+  else:
+    y[:, 0] = x[:, 0] - x[:, 2] / 2 - (input_w - r_h * origin_w) / 2
+    y[:, 2] = x[:, 0] + x[:, 2] / 2 - (input_w - r_h * origin_w) / 2
+    y[:, 1] = x[:, 1] - x[:, 3] / 2
+    y[:, 3] = x[:, 1] + x[:, 3] / 2
+    y /= r_h
+
+  return y
+
+
+class Yolo(object):
   """
   description: Base class for Yolo inference, including preprocessing and postprocessing ops.
   """
@@ -89,34 +157,6 @@ class YoloInfer(object):
     image = np.ascontiguousarray(image)
     return image, image_raw, h, w
 
-  def xywh2xyxy(self, origin_h, origin_w, x):
-    """
-    description:    Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
-    param:
-      origin_h:   height of original image
-      origin_w:   width of original image
-      x:          A boxes numpy, each row is a box [center_x, center_y, w, h]
-    return:
-      y:          A boxes numpy, each row is a box [x1, y1, x2, y2]
-    """
-    y = np.zeros_like(x)
-    r_w = self.input_w / origin_w
-    r_h = self.input_h / origin_h
-    if r_h > r_w:
-      y[:, 0] = x[:, 0] - x[:, 2] / 2
-      y[:, 2] = x[:, 0] + x[:, 2] / 2
-      y[:, 1] = x[:, 1] - x[:, 3] / 2 - (self.input_h - r_w * origin_h) / 2
-      y[:, 3] = x[:, 1] + x[:, 3] / 2 - (self.input_h - r_w * origin_h) / 2
-      y /= r_w
-    else:
-      y[:, 0] = x[:, 0] - x[:, 2] / 2 - (self.input_w - r_h * origin_w) / 2
-      y[:, 2] = x[:, 0] + x[:, 2] / 2 - (self.input_w - r_h * origin_w) / 2
-      y[:, 1] = x[:, 1] - x[:, 3] / 2
-      y[:, 3] = x[:, 1] + x[:, 3] / 2
-      y /= r_h
-
-    return y
-
   def post_process(self, output, origin_h, origin_w):
     """
     description: postprocess the prediction
@@ -130,20 +170,17 @@ class YoloInfer(object):
       result_classid: finally classid, a numpy, each element is the classid correspoing to box
     """
     # Do nms
-    boxes = self.non_max_suppression(output, origin_h, origin_w, conf_thres=self.conf, nms_thres=self.iou)
-    
-    # check and filter box with w=1 and h=1
+    boxes = self.non_max_suppression(output, origin_h, origin_w, self.input_h, self.input_w, conf_thres=self.conf, nms_thres=self.iou)
+
+    # check and filter box with w=1 and h=1 (line)
     boxes = self.check_boxes(boxes)
 
     # return boxes
     results = boxes if len(boxes) else np.array([])
     return results
-    # result_boxes = boxes[:, :4] if len(boxes) else np.array([])
-    # result_scores = boxes[:, 4] if len(boxes) else np.array([])
-    # result_classid = boxes[:, 5] if len(boxes) else np.array([])
-    # return result_boxes, result_scores, result_classid
   
-  def get_detection_matrix(self, prediction, classes=None, max_boxes=6000):
+  @staticmethod
+  def get_detection_matrix(prediction, classes=None, max_boxes=6000):
     """
     description: Convert raw network output (batch, detect, 5 + n_cls) to nx6 matrix (xywh, conf, cls).
     param:
@@ -160,7 +197,8 @@ class YoloInfer(object):
       x[:, 5:] *= x[:, 4:5]  # conf = cls_conf * obj_conf
 
       # Detections matrix nx6 (xywh, conf, cls)
-      conf, j = x[:, 5:].max(1, keepdims=True), np.expand_dims(x[:, 5:].argmax(1), axis=1)
+      conf = x[:, 5:].max(1, keepdims=True)
+      j =  np.expand_dims(x[:, 5:].argmax(1), axis=1)
       x = np.concatenate((x[:, :4], conf, j.astype(conf.dtype)), 1)#[conf.flatten() > 0.5]
 
       # filter by class
@@ -176,54 +214,20 @@ class YoloInfer(object):
 
       output[xi] = x
 
-    return output if len(output) > 1 else output[0]
+    return np.array(output) if len(output) > 1 else output[0]
 
-  def bbox_iou(self, box1, box2, x1y1x2y2=True):
-    """
-    description: compute the IoU of two bounding boxes
-    param:
-      box1: A box coordinate (can be (x1, y1, x2, y2) or (x, y, w, h))
-      box2: A box coordinate (can be (x1, y1, x2, y2) or (x, y, w, h))            
-      x1y1x2y2: select the coordinate format
-    return:
-      iou: computed iou
-    """
-    if not x1y1x2y2:
-      # Transform from center and width to exact coordinates
-      b1_x1, b1_x2 = box1[:, 0] - box1[:, 2] / 2, box1[:, 0] + box1[:, 2] / 2
-      b1_y1, b1_y2 = box1[:, 1] - box1[:, 3] / 2, box1[:, 1] + box1[:, 3] / 2
-      b2_x1, b2_x2 = box2[:, 0] - box2[:, 2] / 2, box2[:, 0] + box2[:, 2] / 2
-      b2_y1, b2_y2 = box2[:, 1] - box2[:, 3] / 2, box2[:, 1] + box2[:, 3] / 2
-    else:
-      # Get the coordinates of bounding boxes
-      b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
-      b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
-
-    # Get the coordinates of the intersection rectangle
-    inter_rect_x1 = np.maximum(b1_x1, b2_x1)
-    inter_rect_y1 = np.maximum(b1_y1, b2_y1)
-    inter_rect_x2 = np.minimum(b1_x2, b2_x2)
-    inter_rect_y2 = np.minimum(b1_y2, b2_y2)
-    # Intersection area
-    inter_area = np.clip(inter_rect_x2 - inter_rect_x1 + 1, 0, None) * \
-                 np.clip(inter_rect_y2 - inter_rect_y1 + 1, 0, None)
-    # Union Area
-    b1_area = (b1_x2 - b1_x1 + 1) * (b1_y2 - b1_y1 + 1)
-    b2_area = (b2_x2 - b2_x1 + 1) * (b2_y2 - b2_y1 + 1)
-
-    iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
-
-    return iou
-  
-  def check_boxes(self, boxes):
+  @staticmethod
+  def check_boxes(boxes):
     if len(boxes)==0:
       return boxes
     boxes[:, 2:4] -= boxes[:, :2] - 1
     boxes = boxes[(boxes[:, 2:4].astype(int) > 1).all(1)]
     boxes[:, 2:4] += boxes[:, :2] - 1
     return boxes
-
-  def non_max_suppression(self, prediction, origin_h, origin_w, conf_thres=0.5, nms_thres=0.4):
+  
+  @staticmethod
+  @njit
+  def non_max_suppression(prediction, origin_h, origin_w, input_h, input_w, conf_thres=0.5, nms_thres=0.4):
     """
     description: Removes detections with lower object confidence score than 'conf_thres' and performs
     Non-Maximum Suppression to further filter detections.
@@ -239,30 +243,102 @@ class YoloInfer(object):
     # Get the boxes that score > CONF_THRESH
     boxes = prediction[prediction[:, 4] >= conf_thres]
     # Trandform bbox from [center_x, center_y, w, h] to [x1, y1, x2, y2]
-    boxes[:, :4] = self.xywh2xyxy(origin_h, origin_w, boxes[:, :4])
+    boxes[:, :4] = xywh2xyxy(boxes[:, :4], origin_h, origin_w, input_h, input_w)
     # clip the coordinates
-    boxes[:, 0] = np.clip(boxes[:, 0], 0, origin_w -1)
-    boxes[:, 2] = np.clip(boxes[:, 2], 0, origin_w -1)
-    boxes[:, 1] = np.clip(boxes[:, 1], 0, origin_h -1)
-    boxes[:, 3] = np.clip(boxes[:, 3], 0, origin_h -1)
+    boxes[:, 0] = np.minimum(origin_w -1, np.maximum(boxes[:, 0], 0)) #np.clip(boxes[:, 0], 0, origin_w -1)
+    boxes[:, 2] = np.minimum(origin_w -1, np.maximum(boxes[:, 2], 0)) #np.clip(boxes[:, 2], 0, origin_w -1)
+    boxes[:, 1] = np.minimum(origin_h -1, np.maximum(boxes[:, 1], 0)) #np.clip(boxes[:, 1], 0, origin_h -1)
+    boxes[:, 3] = np.minimum(origin_h -1, np.maximum(boxes[:, 3], 0)) #np.clip(boxes[:, 3], 0, origin_h -1)
     # Object confidence
     confs = boxes[:, 4]
     # Sort by the confs
     boxes = boxes[np.argsort(-confs)]
     # Perform non-maximum suppression
-    keep_boxes = []
+    keep_boxes = np.zeros_like(boxes)
+    idx = 0
     while boxes.shape[0]:
-      large_overlap = self.bbox_iou(np.expand_dims(boxes[0, :4], 0), boxes[:, :4]) > nms_thres
+      large_overlap = bbox_iou(np.expand_dims(boxes[0, :4], 0), boxes[:, :4]) > nms_thres
       label_match = boxes[0, -1] == boxes[:, -1]
       # Indices of boxes with lower confidence scores, large IOUs and matching labels
       invalid = large_overlap & label_match
-      keep_boxes += [boxes[0]]
+      keep_boxes[idx] = boxes[0]
       boxes = boxes[~invalid]
-    boxes = np.stack(keep_boxes, 0) if len(keep_boxes) else np.array([])
-    return boxes
+      idx = idx+1
+
+    return keep_boxes
 
 
-class YoloTRT(YoloInfer):
+class YoloInfer(Yolo):
+  """
+  description: Yolo inference using ONNX and Polygraphy (TensorRT Backend).
+  """
+
+  def __init__(self, model_path=None, classes=None, conf=0.5, iou=0.4):
+    super(YoloInfer, self).__init__(classes, conf, iou)
+    if model_path is None:
+      return
+    self.setup_model(model_path, classes)
+
+  def setup_model(self, model_path, classes):
+    self.load_class_names(classes)
+    if model_path.endswith('.onnx'):
+      self.backend = 'onnx'
+      self.session = onnxruntime.InferenceSession(model_path, providers=onnxruntime.get_available_providers())
+    elif model_path.endswith('.engine') or model_path.endswith('.trt'):
+      self.backend = 'trt'
+      self.engine = EngineFromBytes(BytesFromPath(model_path))
+      self.session = TrtRunner(self.engine)
+      self.session.activate()
+      self.input_h, self.input_w = self.session.get_input_metadata()['images'].shape[2:]
+      self.input_dtype = self.session.get_input_metadata()['images'].dtype
+
+  def infer(self, img, imgsz=None, classes=None, render=False, proc_time=False):
+    threading.Thread.__init__(self)
+    if self.backend=='onnx':
+      if imgsz is None:
+        self.input_h, self.input_w = img.shape[:2]
+      if isinstance(imgsz, int):
+        self.input_h = self.input_w = imgsz
+      else:
+        self.input_h, self.input_w = imgsz
+
+    # preprocessing
+    pre_start = time.perf_counter()
+    input_image, image_raw, origin_h, origin_w = self.preprocess_image(img)
+    pre_end = time.perf_counter()
+    
+    # inference
+    infer_start = time.perf_counter()
+    if self.backend=='onnx':
+      y = self.session.run([self.session.get_outputs()[0].name], {self.session.get_inputs()[0].name: input_image})[0]
+    else:
+      out = self.session.infer(feed_dict={"images": input_image.astype(self.input_dtype)})
+      y = copy.deepcopy(out['output'])
+    infer_end = time.perf_counter()
+    output = self.get_detection_matrix(y, classes=classes)
+
+    # postprocessing
+    post_start = time.perf_counter()
+    results = self.post_process(output, origin_h, origin_w)
+    post_end = time.perf_counter()
+    # return results
+
+    infer_result = InferResult(image_raw, results, self.classes, self.colors)
+    if render:
+      infer_result.render()
+    if proc_time:
+      return infer_result, (pre_end-pre_start, infer_end-infer_start, post_end-post_start)
+
+    return infer_result
+
+  def destroy(self):
+    try:
+      self.session.deactivate()
+    except:
+      del self.session
+
+
+class YoloTRT(Yolo):
   """
   description: Yolo inference using Polygraphy (TensorRT Backend).
   """
@@ -313,7 +389,7 @@ class YoloTRT(YoloInfer):
     self.runner.deactivate()
 
 
-class YoloONNX(YoloInfer):
+class YoloONNX(Yolo):
   """
   description: Yolo inference using ONNX.
   """

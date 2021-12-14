@@ -120,7 +120,8 @@ class CameraStream(Camera):
     # bottom = top + self.height-1
     # left = self.capture_width//2 - self.width//2
     # right = left + self.width-1
-    return 'nvarguscamerasrc gainrange="16 16" ispdigitalgainrange="1 1" sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d ! video/x-raw(memory:NVMM), width=%d, height=%d, format=(string)NV12, framerate=(fraction)%d/1 ! nvvidconv top=%d bottom=%d left=%d right=%d ! video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! videoconvert ! videobalance contrast=%f brightness=%f saturation=%f ! appsink max-buffers=1 drop=true' % (
+    # gainrange="16 16" ispdigitalgainrange="1 1"
+    return 'nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d ! video/x-raw(memory:NVMM), width=%d, height=%d, format=(string)NV12, framerate=(fraction)%d/1 ! nvvidconv top=%d bottom=%d left=%d right=%d ! video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! videoconvert ! videobalance contrast=%f brightness=%f saturation=%f ! appsink max-buffers=1 drop=true' % (
             self.capture_device, self.wbmode, self.tnr_mode, self.tnr_strength, self.ee_mode, self.ee_strength,
             self.capture_width, self.capture_height, self.capture_fps, top, bottom, left, right, self.width, self.height,
             self.contrast, self.brightness, self.saturation)
