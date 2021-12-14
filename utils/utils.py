@@ -3,6 +3,7 @@ from functools import lru_cache
 
 import cv2
 import numpy as np
+from numba import njit
 
 def bgr8_to_jpeg(value, quality=75):
   return bytes(cv2.imencode('.jpg', value)[1])
@@ -116,3 +117,63 @@ def get_line_pts(x, y, l, a, w, h):
   dx = 0.5*l*np.cos(np.deg2rad(a))
   dy = 0.5*l*np.sin(np.deg2rad(a))
   return (int((x-dx)*w), int((y-dy)*h)), (int((x+dx)*w), int((y+dy)*h))
+
+@njit
+def reduce_boxes(boxroi, roi_tl):
+  roi_x, roi_y = roi_tl
+  boxroi[:, ::2] -= roi_x
+  boxroi[:, 1::2] -= roi_y
+
+@njit
+def expand_boxes(boxroi, roi_tl):
+  roi_x, roi_y = roi_tl
+  boxroi[:, ::2] += roi_x
+  boxroi[:, 1::2] += roi_y
+
+@njit
+def is_intersect_line(line1, line2):
+  P1, P2 = line1[:2], line1[2:]
+  P3, P4 = line2[:2], line2[2:]
+  A, B, C = P2-P1, P3-P4, P1-P3
+
+  den = A[1]*B[0] - A[0]*B[1]
+  num_a = B[1]*C[0] - B[0]*C[1]
+  if den > 0:
+      if num_a < 0 or num_a > den:
+          return False
+  elif num_a > 0 or num_a < den:
+      return False
+
+  num_b = A[0]*C[1] - A[1]*C[0]
+  if den > 0:
+      if num_b < 0 or num_b > den:
+          return False
+  elif num_b > 0 or num_b < den:
+      return False
+
+  return True
+
+@njit
+def get_line_segments(bbox):
+  line1 = bbox.copy()
+  line2 = bbox.copy()
+  line3 = bbox.copy()
+  line4 = bbox.copy()
+  line1[2] = line1[0]
+  line2[3] = line2[1]
+  line3[1] = line3[3]
+  line4[0] = line4[2]
+  return np.vstack((line1, line2, line3, line4))
+
+@njit
+def is_crossing_stop_line(bbox_id, line_pos):
+  nbox = bbox_id.shape[0]
+  crossed = []
+  for i in range(nbox):
+    segments = get_line_segments(bbox_id[i, :4])
+    cross = False
+    for j in range(segments.shape[0]):
+      cross |=  is_intersect_line(line_pos, segments[j])
+    crossed.append(cross)
+
+  return np.array(crossed)
