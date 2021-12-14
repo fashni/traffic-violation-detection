@@ -1,17 +1,11 @@
 #!/bin/bash
 
 pip3 install --upgrade gdown
-mkdir engine
-cd engine
-mkdir onnx
-mkdir trt_poly
 
 gdown --id 1uJWUz1qLggPmluFSGstIPg7h0IySgwwc --folder
 
-mv *.onnx onnx/
-mv *.engine trt_poly/
+cd engine/onnx
 
-cd onnx
 mkdir nano
 mkdir small
 mkdir tiny
