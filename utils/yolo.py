@@ -574,36 +574,46 @@ class YoloTRT2(YoloInfer):
 
 
 class InferResult(object):
-  valid_forms = ['xyxy', 'xywh', 'ltwh', 'xyah']
+  valid_forms = ['xyxy', 'xywh', 'ltwh', 'yolo']
   results = boxes = confs = classids = np.array([])
-  _xyxy = _xywh = _ltwh = np.array([])
+  _xyxy = _xywh = _ltwh = _yolo = np.array([])
 
   def __init__(self, raw_img, results, class_lbl=None, colors=None, ti=None):
     self.raw_img = raw_img
-    self.img = raw_img.copy()
-    self.results = results
     self.xyxy = results
     if len(results):
       self.boxes, self.confs, self.classids = results[:, :4], results[:, 4], results[:, 5]
       self.ltwh = self.xyxy
       self.xywh = self.ltwh
+      self.yolo = self.xywh
     self.classes = class_lbl or [f'class{i}' for i in range(1000)]
     self.colors = colors or [[random.randint(0, 255) for _ in range(3)] for _ in range(len(self.classes))]
 
   @property
+  def raw_img(self):
+    return self._raw_img
+
+  @raw_img.setter
+  def raw_img(self, value):
+    self._raw_img = value
+    self.img = value.copy()
+
+  @property
   def xyxy(self): # top-left, right-bottom
-    self.xyxy = self.results
     return self._xyxy
 
   @xyxy.setter
   def xyxy(self, value):
     self._xyxy = value
+    self.ltwh = value
+    self.xywh = self.ltwh
+    self.yolo = self.xywh
 
-  @property 
+  @property
   def ltwh(self):  # x, y --> top-left
     self.ltwh = self.xyxy
     return self._ltwh
-  
+
   @ltwh.setter
   def ltwh(self, value):
     self._ltwh = value.copy()
@@ -614,12 +624,26 @@ class InferResult(object):
   def xywh(self): # x, y --> center
     self.xywh = self.ltwh
     return self._xywh
-  
+
   @xywh.setter
   def xywh(self, value):
     self._xywh = value.copy()
     if value.size > 0:
       self._xywh[:, :2] += self._xywh[:, 2:4]/2
+
+  @property
+  def yolo(self):
+    self.yolo = self.xywh
+    return self._yolo
+
+  @yolo.setter
+  def yolo(self, value):
+    self._yolo = value.copy()
+    if value.size > 0:
+      h, w = self.raw_img.shape[:2]
+      box = self._yolo[:, :4]
+      box[:, ::2] /= w
+      box[:, 1::2] /= h
 
   def get_class_name(self, cls_id):
     return self.classes[cls_id]
@@ -630,7 +654,7 @@ class InferResult(object):
       return
     if form=='xyxy':
       return ['x1', 'y1', 'x2', 'y2'] + conf_clsid
-    elif form=='xywh':
+    elif form=='xywh' or form=='yolo':
       return ['cx', 'cy', 'w', 'h']  + conf_clsid
     elif form=='ltwh':
       return ['x', 'y', 'w', 'h']  + conf_clsid
