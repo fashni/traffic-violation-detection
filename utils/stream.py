@@ -113,9 +113,9 @@ class CameraStream(Camera):
     ww = int(r*hh)
 
     top = 0
-    bottom = hh
+    bottom = hh - 1
     left = self.capture_width//2 - ww//2
-    right = left + ww
+    right = left + ww - 1
     # top = self.capture_height//2 - self.height//2
     # bottom = top + self.height-1
     # left = self.capture_width//2 - self.width//2
