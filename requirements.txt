@@ -1,7 +1,8 @@
 opencv-python
 numpy
 traitlets
-pafy
+#pafy
+git+https://github.com/Cupcakus/pafy
 pandas
 
 #onnxruntime==1.8.0
