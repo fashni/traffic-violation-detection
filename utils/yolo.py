@@ -11,8 +11,6 @@ from numba import njit, jit
 # import pycuda.autoinit
 # import pycuda.driver as cuda
 # import tensorrt as trt
-from polygraphy.backend.common import BytesFromPath
-from polygraphy.backend.trt import EngineFromBytes, TrtRunner
 
 from .utils import plot_one_box
 
@@ -285,6 +283,8 @@ class YoloInfer(Yolo):
       self.backend = 'onnx'
       self.session = onnxruntime.InferenceSession(model_path, providers=onnxruntime.get_available_providers())
     elif model_path.endswith('.engine') or model_path.endswith('.trt'):
+      from polygraphy.backend.common import BytesFromPath
+      from polygraphy.backend.trt import EngineFromBytes, TrtRunner
       self.backend = 'trt'
       self.engine = EngineFromBytes(BytesFromPath(model_path))
       self.session = TrtRunner(self.engine)
