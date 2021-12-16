@@ -1,6 +1,7 @@
 opencv-python
 numpy
 traitlets
+youtube-dl
 #pafy
 git+https://github.com/Cupcakus/pafy
 pandas
