@@ -5,6 +5,7 @@ youtube-dl
 #pafy
 git+https://github.com/Cupcakus/pafy
 pandas
+colored
 
 #onnxruntime==1.8.0
 onnxruntime-gpu==1.8.0

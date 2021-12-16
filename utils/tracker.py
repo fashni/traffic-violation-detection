@@ -76,7 +76,7 @@ class CarRecord:
 
   def create_run(self):
     exec_time = datetime.now()
-    RUN_DIR = RUNS_DIR / exec_time.isoformat()
+    RUN_DIR = RUNS_DIR / exec_time.isoformat().replace(':', '')
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     FRAME_DIR = RUN_DIR / 'frames'
     FRAME_DIR.mkdir(parents=True, exist_ok=True)
