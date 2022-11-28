@@ -58,7 +58,7 @@ class URLStream(Camera):
     super(URLStream, self).__init__(*args, **kwargs)
     if 'youtube.com/' in self.url or 'youtu.be/' in self.url:  # if source is YouTube video
       import pafy
-      self.url = pafy.new(self.url).getbest(preftype="mp4").url
+      self.url = pafy.new(self.url).getbestvideo(preftype="mp4").url
     # self.cap = cv2.VideoCapture(self._gst_str, cv2.CAP_GSTREAMER)
     self.cap = cv2.VideoCapture(self.url)
     assert self.cap.isOpened(), f'Failed to open {self.url}'
